@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.  All rights reserved
 // This file is best viewed using outline mode (Ctrl-M Ctrl-O)
 
+using Microsoft.Diagnostics.Tracing.AutomatedAnalysis;
+using Microsoft.Diagnostics.Tracing.StackSources;
 using Microsoft.Diagnostics.Utilities;
 using System;
 using System.Collections.Concurrent;
@@ -9,6 +11,7 @@ using System.Diagnostics;
 using System.IO;                        // For TextWriter.  
 using System.Text;
 using System.Threading;
+using static Microsoft.Diagnostics.Tracing.AutomatedAnalysis.AnalyzerIssueStackSource;
 
 namespace Microsoft.Diagnostics.Tracing.Stacks
 {
@@ -857,7 +860,7 @@ namespace Microsoft.Diagnostics.Tracing.Stacks
         /// the intern stack source (interning along the way of course).   Logically baseCallStackIndex has NOTHING to do with any of the
         /// call stack indexes in the intern stack source.  
         /// </summary>
-        private StackSourceCallStackIndex InternFullStackFromSource(StackSourceCallStackIndex baseCallStackIndex, StackSourceStacks source, int maxDepth = 1000)
+        protected StackSourceCallStackIndex InternFullStackFromSource(StackSourceCallStackIndex baseCallStackIndex, StackSourceStacks source, int maxDepth = 1000, StackResolverArgs stackResolver = null)
         {
             // To avoid stack overflows.  
             if (maxDepth < 0)
@@ -875,6 +878,24 @@ namespace Microsoft.Diagnostics.Tracing.Stacks
 
             var baseFullFrameName = source.GetFrameName(baseFrame, true);
             var moduleName = "";
+
+            // Check if this is an unresolved frame
+            if (stackResolver != null && baseFullFrameName.EndsWith("!?") && !baseFullFrameName.Equals("?!?"))
+            {
+                moduleName = baseFullFrameName.Substring(0, baseFullFrameName.Length - 2);
+                if (stackResolver.StackView.ResolveSymbols(moduleName))
+                {
+                    // Once I resolve the symbols, do I invalidate the cache or what in order for the "getframename" below to use the new frame
+                    // Was sometimes getting NRE when retrying to get the calltreenode
+                    var newNode = stackResolver.StackView.GetCallTreeNode(stackResolver.Node.Name);
+                    if (newNode != null)
+                    {
+                        source = newNode.CallTree.StackSource;
+                        baseFullFrameName = source.GetFrameName(baseFrame, true);
+                    }
+                }
+            }
+
             var frameName = baseFullFrameName;
             var index = baseFullFrameName.IndexOf('!');
             if (index >= 0)
@@ -885,7 +906,7 @@ namespace Microsoft.Diagnostics.Tracing.Stacks
 
             var myModuleIndex = Interner.ModuleIntern(moduleName);
             var myFrameIndex = Interner.FrameIntern(frameName, myModuleIndex);
-            var ret = Interner.CallStackIntern(myFrameIndex, InternFullStackFromSource(baseCaller, source, maxDepth - 1));
+            var ret = Interner.CallStackIntern(myFrameIndex, InternFullStackFromSource(baseCaller, source, maxDepth - 1, stackResolver));
             return ret;
         }
         #endregion
